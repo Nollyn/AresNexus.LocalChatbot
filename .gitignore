@@ -1,0 +1,10 @@
+bin/
+obj/
+/packages/
+riderModule.iml
+/_ReSharper.Caches/
+__pycache__/
+*.pyc
+chroma_db/
+.background_output_*.txt
+.output.txt

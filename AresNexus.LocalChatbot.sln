@@ -1,0 +1,13 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "data", "data", "{BB819DD1-F4EC-46D8-8782-05A729C32B2F}"
+	ProjectSection(SolutionItems) = preProject
+		data\ares_nexus_pattern.txt = data\ares_nexus_pattern.txt
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+EndGlobal
