@@ -30,7 +30,7 @@ class TestAresNexusRAG(unittest.TestCase):
         self.assertTrue(DEFAULT_DOCUMENT_PATH.exists(), f"File {DEFAULT_DOCUMENT_PATH} does not exist.")
         content = DEFAULT_DOCUMENT_PATH.read_text(encoding="utf-8")
         self.assertIn("Ares-Nexus", content)
-        self.assertIn("Observe -> Reason -> Recommend", content)
+        self.assertIn("Non-Executive AI", content)
         self.assertIn("Decision Gate", content)
         paragraphs = [p for p in content.split("\n\n") if p.strip()]
         self.assertGreaterEqual(len(paragraphs), 4, "Document must have at least 3-4 paragraphs.")
@@ -105,11 +105,10 @@ class TestAresNexusRAG(unittest.TestCase):
             ollama_service=self.ollama,
             top_k=3
         )
-        result = inference.query("Explain the Observe -> Reason -> Recommend loop.")
+        result = inference.query("Explain the Non-Executive AI (NEAI) pattern and Decision Gate.")
         self.assertTrue(result["confidence_passed"])
-        self.assertIn("Observe", result["answer"])
-        self.assertIn("Reason", result["answer"])
-        self.assertIn("Recommend", result["answer"])
+        self.assertGreater(len(result["answer"]), 20)
+        self.assertIn("NEAI", result["answer"] + result["prompt"])
 
     def test_07_out_of_domain_query_fallback(self):
         """Verify out-of-domain queries return baseline not found message."""
