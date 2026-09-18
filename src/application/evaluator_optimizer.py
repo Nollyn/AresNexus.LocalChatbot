@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field, field_validator
 
 from src.domain.interfaces import LLMClient
 from src.domain.models import RetrievedContextChunk, EvaluationResult
@@ -13,6 +14,9 @@ from src.config import (
     MAX_RETRIES,
     TRUST_THRESHOLD,
     SAFETY_FALLBACK_MESSAGE,
+    STAGNATION_THRESHOLD,
+    STAGNATION_FALLBACK_MESSAGE,
+    PARSING_ERROR_FEEDBACK,
     OPTIMIZER_SYSTEM_PROMPT,
     EVALUATOR_SYSTEM_PROMPT,
 )
@@ -21,90 +25,149 @@ logger = logging.getLogger(__name__)
 NOT_FOUND_MESSAGE = "Information not found in the baseline document."
 
 
+class EvaluatorResponseSchema(BaseModel):
+    """
+    Pydantic schema for strictly validating and normalizing Evaluator JSON payload.
+    """
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    feedback: str = Field(default="")
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def validate_score(cls, v: Any) -> float:
+        """Validate and clamp numerical score between 0.0 and 1.0."""
+        try:
+            val = float(v)
+            return max(0.0, min(1.0, val))
+        except (ValueError, TypeError):
+            return 0.0
+
+    @field_validator("feedback", mode="before")
+    @classmethod
+    def validate_feedback(cls, v: Any) -> str:
+        """Normalize feedback string."""
+        if v is None:
+            return ""
+        return str(v).strip()
+
+
 def extract_evaluator_json(raw_text: str) -> EvaluationResult:
     """
-    Robust JSON extractor for Evaluator responses.
-    Handles raw JSON, markdown-wrapped JSON (```json ... ```), preamble/postscript text,
-    and regex fallback for malformed responses.
+    Defensive JSON extractor for Evaluator responses with regex extraction and Pydantic validation.
+    Handles raw JSON, markdown-wrapped JSON (```json ... ```), conversational preambles/postscripts,
+    and regex boundary extraction between outermost curly braces {}.
+    Executes a graceful fallback to score=0.0 and PARSING_ERROR_FEEDBACK on unrecoverable malformed text.
 
     :param raw_text: Raw string output from Evaluator LLM.
-    :return: Parsed EvaluationResult object.
+    :return: Validated EvaluationResult object.
     """
-    if not raw_text or not raw_text.strip():
-        return EvaluationResult(score=0.0, feedback="Empty response received from Evaluator.", verified=False)
+    if not raw_text or not str(raw_text).strip():
+        return EvaluationResult(
+            score=0.0,
+            feedback=PARSING_ERROR_FEEDBACK,
+            verified=False,
+        )
 
-    text = raw_text.strip()
+    text = str(raw_text).strip()
 
-    # 1. Direct JSON parse
+    # Outer try-except to guarantee zero graph execution crashes
     try:
-        data = json.loads(text)
-        if isinstance(data, dict) and "score" in data:
-            return _normalize_evaluation(data)
-    except Exception:
-        pass
-
-    # 2. Extract from markdown code blocks ```json ... ``` or ``` ... ```
-    code_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-    if code_block_match:
-        block_content = code_block_match.group(1).strip()
+        # 1. Direct JSON parse + Pydantic validation
         try:
-            data = json.loads(block_content)
-            if isinstance(data, dict) and "score" in data:
-                return _normalize_evaluation(data)
+            data = json.loads(text)
+            if isinstance(data, dict):
+                model = EvaluatorResponseSchema.model_validate(data)
+                return EvaluationResult(
+                    score=model.score,
+                    feedback=model.feedback or PARSING_ERROR_FEEDBACK,
+                    verified=model.score >= TRUST_THRESHOLD,
+                )
         except Exception:
             pass
 
-    # 3. Search for outermost JSON object { ... }
-    json_object_match = re.search(r"(\{[\s\S]*\})", text)
-    if json_object_match:
-        try:
-            data = json.loads(json_object_match.group(1))
-            if isinstance(data, dict) and "score" in data:
-                return _normalize_evaluation(data)
-        except Exception:
-            pass
+        # 2. Extract from markdown code blocks ```(?:json)? ... ```
+        code_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+        if code_block_match:
+            block_content = code_block_match.group(1).strip()
+            try:
+                data = json.loads(block_content)
+                if isinstance(data, dict):
+                    model = EvaluatorResponseSchema.model_validate(data)
+                    return EvaluationResult(
+                        score=model.score,
+                        feedback=model.feedback or PARSING_ERROR_FEEDBACK,
+                        verified=model.score >= TRUST_THRESHOLD,
+                    )
+            except Exception:
+                pass
 
-    # 4. Regex fallback if JSON is partial or malformed
-    score = 0.0
-    feedback = text
+        # 3. Defensive regex extraction of outermost curly braces { ... }
+        json_object_match = re.search(r"(\{[\s\S]*\})", text)
+        if json_object_match:
+            try:
+                data = json.loads(json_object_match.group(1))
+                if isinstance(data, dict):
+                    model = EvaluatorResponseSchema.model_validate(data)
+                    return EvaluationResult(
+                        score=model.score,
+                        feedback=model.feedback or PARSING_ERROR_FEEDBACK,
+                        verified=model.score >= TRUST_THRESHOLD,
+                    )
+            except Exception:
+                pass
 
-    score_match = re.search(r'"score"\s*:\s*([0-9]*\.?[0-9]+)', text, re.IGNORECASE)
-    if not score_match:
-        score_match = re.search(r'score\s*[:=]\s*([0-9]*\.?[0-9]+)', text, re.IGNORECASE)
-    if score_match:
-        try:
-            score = float(score_match.group(1))
-        except ValueError:
-            score = 0.0
+        # 4. Fallback regex field extraction for partial/malformed key-values
+        score_match = re.search(r'"?score"?\s*[:=]\s*([0-9]*\.?[0-9]+)', text, re.IGNORECASE)
+        feedback_match = re.search(
+            r'"?feedback"?\s*[:=]\s*["\']?(.*?)["\']?(?:,|\n|\}|$)',
+            text,
+            re.IGNORECASE | re.MULTILINE,
+        )
 
-    feedback_match = re.search(r'"feedback"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', text, re.IGNORECASE)
-    if not feedback_match:
-        feedback_match = re.search(r'feedback\s*[:=]\s*["\']?(.*?)["\']?$', text, re.IGNORECASE | re.MULTILINE)
-    if feedback_match:
-        feedback = feedback_match.group(1).strip()
+        if score_match:
+            try:
+                raw_score = float(score_match.group(1))
+                raw_feedback = feedback_match.group(1).strip() if feedback_match else text
+                model = EvaluatorResponseSchema(score=raw_score, feedback=raw_feedback)
+                return EvaluationResult(
+                    score=model.score,
+                    feedback=model.feedback or PARSING_ERROR_FEEDBACK,
+                    verified=model.score >= TRUST_THRESHOLD,
+                )
+            except Exception:
+                pass
 
-    clamped_score = max(0.0, min(1.0, float(score)))
-    return EvaluationResult(
-        score=clamped_score,
-        feedback=str(feedback).strip() if feedback else text,
-        verified=clamped_score >= TRUST_THRESHOLD,
-    )
+        # Programmatic graceful fallback if text cannot be parsed
+        return EvaluationResult(
+            score=0.0,
+            feedback=PARSING_ERROR_FEEDBACK,
+            verified=False,
+        )
+
+    except Exception as exc:
+        logger.warning("Defensive evaluator JSON parsing encountered exception: %s", exc)
+        return EvaluationResult(
+            score=0.0,
+            feedback=PARSING_ERROR_FEEDBACK,
+            verified=False,
+        )
 
 
 def _normalize_evaluation(data: Dict[str, Any]) -> EvaluationResult:
-    """Normalize extracted dictionary into EvaluationResult."""
-    raw_score = data.get("score", 0.0)
+    """Normalize extracted dictionary into EvaluationResult via Pydantic."""
     try:
-        score = float(raw_score)
-    except (ValueError, TypeError):
-        score = 0.0
-    score = max(0.0, min(1.0, score))
-    feedback = str(data.get("feedback", "")).strip()
-    return EvaluationResult(
-        score=score,
-        feedback=feedback,
-        verified=score >= TRUST_THRESHOLD,
-    )
+        model = EvaluatorResponseSchema.model_validate(data)
+        return EvaluationResult(
+            score=model.score,
+            feedback=model.feedback or PARSING_ERROR_FEEDBACK,
+            verified=model.score >= TRUST_THRESHOLD,
+        )
+    except Exception:
+        return EvaluationResult(
+            score=0.0,
+            feedback=PARSING_ERROR_FEEDBACK,
+            verified=False,
+        )
 
 
 class EvaluatorOptimizerController:
@@ -140,8 +203,18 @@ class EvaluatorOptimizerController:
         retrieved_chunks: List[RetrievedContextChunk],
         previous_draft: Optional[str] = None,
         feedback: Optional[str] = None,
+        history: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        """Construct structured prompt for Optimizer draft generation."""
+        """
+        Construct structured prompt for Optimizer draft generation with contrastive historical context.
+
+        :param query: User query string.
+        :param retrieved_chunks: List of retrieved context chunks.
+        :param previous_draft: Optional single previous draft.
+        :param feedback: Optional single feedback critique.
+        :param history: Optional accumulative history of previous iterations.
+        :return: Structured prompt string.
+        """
         if not retrieved_chunks:
             context_section = "NO RELEVANT CONTEXT FOUND."
         else:
@@ -167,7 +240,30 @@ class EvaluatorOptimizerController:
             f"USER QUERY:\n{query}",
         ]
 
-        if feedback and previous_draft:
+        if history and len(history) > 0:
+            history_blocks = []
+            for item in history:
+                iter_num = item.get("iteration", len(history_blocks) + 1)
+                iter_draft = item.get("draft", "")
+                iter_score = item.get("score", 0.0)
+                iter_feedback = item.get("feedback", "")
+                history_blocks.append(
+                    f"--- ITERATION {iter_num} (Score: {iter_score:.2f} - REJECTED) ---\n"
+                    f"Previous Draft:\n{iter_draft}\n\n"
+                    f"Evaluator Critique / Error Diagnosis:\n{iter_feedback}\n"
+                    f"------------------------------------------------"
+                )
+            contrastive_history = "\n\n".join(history_blocks)
+            prompt_parts.append(
+                f"HISTORICAL REVISION LOG & PREVIOUS FAILURES:\n{contrastive_history}\n\n"
+                f"CONTRASTIVE LEARNING & REVISION DIRECTIVES:\n"
+                f"- Carefully review ALL previous iterations and the evaluator critiques listed above.\n"
+                f"- Do NOT repeat the previous errors, hallucinations, or unsupported claims.\n"
+                f"- Explicitly contrast your new draft with the prior rejected attempts to ensure all identified faults are fixed.\n"
+                f"- Ensure every claim is strictly grounded in the CONTEXT above.\n"
+                f"- Maintain accurate citations."
+            )
+        elif feedback and previous_draft:
             prompt_parts.append(
                 f"PREVIOUS DRAFT (REJECTED BY EVALUATOR):\n{previous_draft}\n\n"
                 f"CRITIQUE & FEEDBACK FROM EVALUATOR:\n{feedback}\n\n"
@@ -238,13 +334,15 @@ class EvaluatorOptimizerController:
         retrieved_chunks: List[RetrievedContextChunk],
         previous_draft: Optional[str] = None,
         feedback: Optional[str] = None,
+        history: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        """Invoke Optimizer agent to generate draft."""
+        """Invoke Optimizer agent to generate draft with contrastive historical awareness."""
         prompt = self.construct_optimizer_prompt(
             query=query,
             retrieved_chunks=retrieved_chunks,
             previous_draft=previous_draft,
             feedback=feedback,
+            history=history,
         )
         return self.llm_client.generate(
             prompt=prompt,
@@ -259,12 +357,12 @@ class EvaluatorOptimizerController:
         draft: str,
     ) -> EvaluationResult:
         """Invoke Evaluator agent to audit draft and return EvaluationResult."""
-        prompt = self.construct_evaluator_prompt(
-            query=query,
-            retrieved_chunks=retrieved_chunks,
-            draft=draft,
-        )
         try:
+            prompt = self.construct_evaluator_prompt(
+                query=query,
+                retrieved_chunks=retrieved_chunks,
+                draft=draft,
+            )
             raw_eval = self.llm_client.generate(
                 prompt=prompt,
                 system_instruction=self.evaluator_prompt_template,
@@ -276,7 +374,7 @@ class EvaluatorOptimizerController:
             logger.error("Evaluator LLM invocation failed: %s", e)
             return EvaluationResult(
                 score=0.0,
-                feedback=f"Evaluator execution failed: {e}",
+                feedback=PARSING_ERROR_FEEDBACK,
                 verified=False,
             )
 
@@ -286,7 +384,7 @@ class EvaluatorOptimizerController:
         chunks: List[RetrievedContextChunk],
     ) -> Dict[str, Any]:
         """
-        Execute the closed-loop Evaluator-Optimizer lifecycle.
+        Execute the closed-loop Evaluator-Optimizer lifecycle with stagnation circuit breaker.
 
         :param query_text: Original user query.
         :param chunks: List of retrieved context chunks.
@@ -296,8 +394,10 @@ class EvaluatorOptimizerController:
         current_draft: Optional[str] = None
         last_feedback: Optional[str] = None
         verified = False
+        stagnated = False
         final_score = 0.0
         final_feedback = ""
+        previous_score: Optional[float] = None
 
         print(f"\n{'='*70}")
         print(f" [*] [EVALUATOR-OPTIMIZER CONTROLLER] Starting Closed-Loop Inference")
@@ -311,7 +411,9 @@ class EvaluatorOptimizerController:
 
             # 1. Borrador / Optimizer Generation
             print(f"\n[1. BORRADOR / DRAFT] Optimizer generating {draft_name} (Iteration {iteration}/{self.max_retries})...")
-            if last_feedback:
+            if history:
+                print(f"[*] Applying accumulative history ({len(history)} prior iterations) for contrastive refinement...")
+            elif last_feedback:
                 print(f"[*] Applying previous feedback to refine response...")
 
             current_draft = self.generate_draft(
@@ -319,6 +421,7 @@ class EvaluatorOptimizerController:
                 retrieved_chunks=chunks,
                 previous_draft=current_draft,
                 feedback=last_feedback,
+                history=history,
             )
             print(f"[+] [{draft_name} Generated]:\n{current_draft}\n")
 
@@ -342,29 +445,45 @@ class EvaluatorOptimizerController:
                 "feedback": feedback,
             })
 
-            # 3. Decision Gate
+            # 3. Decision Gate & Circuit Breakers
             if score >= self.trust_threshold:
                 print(f"[3. ACEPTACION / ACCEPTED] Score: {score:.2f} >= Threshold ({self.trust_threshold:.2f}) -> ACCEPTED")
                 print(f"    Evaluator Feedback: {feedback}")
                 logger.info("Draft v%d accepted with score %.2f", iteration, score)
                 verified = True
                 break
-            else:
-                print(f"[!] [RECHAZO / REJECTED] Score: {score:.2f} < Threshold ({self.trust_threshold:.2f}) -> REJECTED")
-                print(f"    Evaluator Critique: {feedback}")
-                logger.warning(
-                    "Draft v%d failed evaluation (score=%.2f < %.2f): %s",
-                    iteration, score, self.trust_threshold, feedback
-                )
 
-                if iteration < self.max_retries:
-                    print(f"[*] [REINTENTO / RETRY] Queueing retry with corrective feedback for Draft v{iteration + 1}...")
-                    last_feedback = feedback
-                else:
-                    print(f"[!] [LIMITE ALCANZADO / LIMIT REACHED] Max retries ({self.max_retries}) reached without meeting trust threshold.")
+            print(f"[!] [RECHAZO / REJECTED] Score: {score:.2f} < Threshold ({self.trust_threshold:.2f}) -> REJECTED")
+            print(f"    Evaluator Critique: {feedback}")
+            logger.warning(
+                "Draft v%d failed evaluation (score=%.2f < %.2f): %s",
+                iteration, score, self.trust_threshold, feedback
+            )
+
+            # Hardware-Frugality Stagnation Circuit Breaker Check
+            if previous_score is not None:
+                delta = score - previous_score
+                if delta < STAGNATION_THRESHOLD:
+                    print(
+                        f"[!] [CIRCUIT BREAKER] Score delta ({delta:+.2f}) < threshold ({STAGNATION_THRESHOLD:.2f}). "
+                        f"Stagnation detected."
+                    )
+                    stagnated = True
+                    break
+
+            previous_score = score
+
+            if iteration < self.max_retries:
+                print(f"[*] [REINTENTO / RETRY] Queueing retry with corrective feedback for Draft v{iteration + 1}...")
+                last_feedback = feedback
+            else:
+                print(f"[!] [LIMITE ALCANZADO / LIMIT REACHED] Max retries ({self.max_retries}) reached without meeting trust threshold.")
 
         if verified:
             final_answer = current_draft or ""
+        elif stagnated:
+            logger.warning("Refinement stagnated. Triggering stagnation circuit breaker fallback.")
+            final_answer = STAGNATION_FALLBACK_MESSAGE
         else:
             logger.warning(
                 "Max retries (%d) exhausted without reaching trust threshold (%.2f). Returning safety fallback.",

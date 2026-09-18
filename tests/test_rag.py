@@ -15,6 +15,9 @@ from src.config import (
     EMBEDDING_MODEL,
     LLM_MODEL,
     SAFETY_FALLBACK_MESSAGE,
+    STAGNATION_THRESHOLD,
+    STAGNATION_FALLBACK_MESSAGE,
+    PARSING_ERROR_FEEDBACK,
     TRUST_THRESHOLD,
     MAX_RETRIES,
 )
@@ -270,7 +273,14 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
         # Empty response
         res5 = extract_evaluator_json('')
         self.assertEqual(res5.score, 0.0)
+        self.assertEqual(res5.feedback, PARSING_ERROR_FEEDBACK)
         self.assertFalse(res5.verified)
+
+        # Malformed non-JSON payload
+        res6 = extract_evaluator_json('Totally unparseable evaluator response layout with no numbers.')
+        self.assertEqual(res6.score, 0.0)
+        self.assertEqual(res6.feedback, PARSING_ERROR_FEEDBACK)
+        self.assertFalse(res6.verified)
 
     def test_07_evaluator_optimizer_retry_and_correction_flow(self):
         """Verify EvaluatorOptimizerController retries on rejection and accepts corrected draft."""
@@ -319,10 +329,10 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
             '{"score": 0.40, "feedback": "Unsupported claims."}',
             # Draft 2 + Rejection
             "Hallucinated draft 2",
-            '{"score": 0.45, "feedback": "Still unsupported."}',
+            '{"score": 0.50, "feedback": "Still unsupported."}',
             # Draft 3 + Rejection
             "Hallucinated draft 3",
-            '{"score": 0.40, "feedback": "Still unsupported."}',
+            '{"score": 0.60, "feedback": "Still unsupported."}',
         ])
 
         controller = EvaluatorOptimizerController(
@@ -406,10 +416,13 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
             "query": "What is Non-Executive AI?",
             "retrieved_context": [],
             "current_draft": "Draft v1 text",
+            "drafts": ["Draft v1 text"],
             "evaluation_score": 0.95,
             "evaluation_feedback": "Faithful citation.",
+            "feedback_history": ["Faithful citation."],
             "retry_count": 1,
             "verified": True,
+            "stagnated": False,
             "final_answer": "Draft v1 text",
             "history": [],
         }
@@ -417,6 +430,9 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
         self.assertEqual(state["evaluation_score"], 0.95)
         self.assertEqual(state["retry_count"], 1)
         self.assertTrue(state["verified"])
+        self.assertFalse(state["stagnated"])
+        self.assertEqual(len(state["drafts"]), 1)
+        self.assertEqual(len(state["feedback_history"]), 1)
         self.assertIn("retrieved_context", state)
         self.assertIn("current_draft", state)
         self.assertIn("evaluation_feedback", state)
@@ -462,6 +478,7 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
         }
         optimize_output = workflow.node_optimize(optimize_state)
         self.assertIn("current_draft", optimize_output)
+        self.assertIn("drafts", optimize_output)
         self.assertEqual(optimize_output["retry_count"], 1)
         self.assertIn("Decision Gates", optimize_output["current_draft"])
 
@@ -475,10 +492,12 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
         evaluate_output = workflow.node_evaluate(evaluate_state)
         self.assertEqual(evaluate_output["evaluation_score"], 0.98)
         self.assertTrue(evaluate_output["verified"])
+        self.assertFalse(evaluate_output["stagnated"])
         self.assertEqual(len(evaluate_output["history"]), 1)
+        self.assertEqual(len(evaluate_output["feedback_history"]), 1)
 
     def test_13_langgraph_conditional_edge_routing(self):
-        """Verify conditional router directs flow back to node_optimize or END based on score and retries."""
+        """Verify conditional router directs flow back to node_optimize or END based on score, retries, and stagnation."""
         mock_repo = MockVectorStoreRepository()
         mock_embed = MockEmbeddingGenerator()
         mock_llm = MockLLMClient([])
@@ -489,22 +508,49 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
             embedding_generator=mock_embed,
             max_retries=3,
             trust_threshold=0.90,
+            stagnation_threshold=0.05,
         )
 
-        # Case 1: Low score, under max retries -> retry (route to node_optimize)
-        state_retry_1: AgentState = {"evaluation_score": 0.45, "retry_count": 1}
+        # Case 1: Low score on iteration 1 -> retry (route to node_optimize)
+        state_retry_1: AgentState = {
+            "evaluation_score": 0.45,
+            "retry_count": 1,
+            "history": [{"score": 0.45}],
+        }
         self.assertEqual(workflow.should_continue(state_retry_1), "node_optimize")
 
-        # Case 2: Low score, under max retries -> retry (route to node_optimize)
-        state_retry_2: AgentState = {"evaluation_score": 0.60, "retry_count": 2}
+        # Case 2: Low score on iteration 2 with healthy score improvement (delta = +0.15 >= 0.05) -> retry
+        state_retry_2: AgentState = {
+            "evaluation_score": 0.60,
+            "retry_count": 2,
+            "history": [{"score": 0.45}, {"score": 0.60}],
+        }
         self.assertEqual(workflow.should_continue(state_retry_2), "node_optimize")
 
-        # Case 3: Low score, max retries reached -> terminate (route to END)
-        state_max_retries: AgentState = {"evaluation_score": 0.60, "retry_count": 3}
+        # Case 3: Stagnation circuit breaker (delta = +0.02 < 0.05) -> early exit (route to END)
+        state_stagnated: AgentState = {
+            "evaluation_score": 0.47,
+            "retry_count": 2,
+            "history": [{"score": 0.45}, {"score": 0.47}],
+            "stagnated": True,
+        }
+        self.assertEqual(workflow.should_continue(state_stagnated), END)
+
+        # Case 4: Low score, max retries reached -> terminate (route to END)
+        state_max_retries: AgentState = {
+            "evaluation_score": 0.60,
+            "retry_count": 3,
+            "history": [{"score": 0.40}, {"score": 0.50}, {"score": 0.60}],
+        }
         self.assertEqual(workflow.should_continue(state_max_retries), END)
 
-        # Case 4: High score meeting trust threshold -> accept and terminate (route to END)
-        state_accepted: AgentState = {"evaluation_score": 0.95, "retry_count": 1}
+        # Case 5: High score meeting trust threshold -> accept and terminate (route to END)
+        state_accepted: AgentState = {
+            "evaluation_score": 0.95,
+            "retry_count": 1,
+            "verified": True,
+            "history": [{"score": 0.95}],
+        }
         self.assertEqual(workflow.should_continue(state_accepted), END)
 
     def test_14_langgraph_compiled_workflow_e2e_retry_loop(self):
@@ -543,9 +589,12 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
         final_state = workflow.invoke("How does Ares-Nexus interface with state machines?")
 
         self.assertTrue(final_state["verified"])
+        self.assertFalse(final_state["stagnated"])
         self.assertEqual(final_state["evaluation_score"], 1.0)
         self.assertEqual(final_state["retry_count"], 2)
         self.assertEqual(len(final_state["history"]), 2)
+        self.assertEqual(len(final_state["drafts"]), 2)
+        self.assertEqual(len(final_state["feedback_history"]), 2)
         self.assertIn("isolates cognitive AI", final_state["final_answer"])
         self.assertEqual(len(final_state["retrieved_context"]), 1)
 
@@ -556,13 +605,13 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
         mock_llm = MockLLMClient([
             # Draft 1 + Rejection
             "Draft 1",
-            '{"score": 0.30, "feedback": "Hallucination"}',
-            # Draft 2 + Rejection
+            '{"score": 0.30, "feedback": "Hallucination 1"}',
+            # Draft 2 + Rejection (score improved by 0.10 >= 0.05, no stagnation)
             "Draft 2",
-            '{"score": 0.30, "feedback": "Hallucination"}',
-            # Draft 3 + Rejection
+            '{"score": 0.40, "feedback": "Hallucination 2"}',
+            # Draft 3 + Rejection (score improved by 0.10 >= 0.05, no stagnation)
             "Draft 3",
-            '{"score": 0.30, "feedback": "Hallucination"}',
+            '{"score": 0.50, "feedback": "Hallucination 3"}',
         ])
 
         workflow = create_evaluator_optimizer_workflow(
@@ -576,9 +625,106 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
         final_state = workflow.invoke("Explain undefined protocol.")
 
         self.assertFalse(final_state["verified"])
+        self.assertFalse(final_state["stagnated"])
         self.assertEqual(final_state["retry_count"], 3)
         self.assertEqual(final_state["final_answer"], SAFETY_FALLBACK_MESSAGE)
         self.assertEqual(len(final_state["history"]), 3)
+
+    def test_16_langgraph_stagnation_circuit_breaker(self):
+        """Verify stagnation circuit breaker halts execution when consecutive score delta < 0.05."""
+        mock_repo = MockVectorStoreRepository()
+        mock_embed = MockEmbeddingGenerator()
+        mock_llm = MockLLMClient([
+            # Draft 1 + Rejection (score 0.40)
+            "Draft v1 with ungrounded extrapolations.",
+            '{"score": 0.40, "feedback": "Extrapolations detected."}',
+            # Draft 2 + Rejection (score 0.42 -> delta = 0.02 < 0.05 stagnation)
+            "Draft v2 with minor syntax changes but still ungrounded.",
+            '{"score": 0.42, "feedback": "Still contains ungrounded claims."}',
+        ])
+
+        workflow = create_evaluator_optimizer_workflow(
+            vector_store=mock_repo,
+            llm_client=mock_llm,
+            embedding_generator=mock_embed,
+            max_retries=3,
+            trust_threshold=0.90,
+            stagnation_threshold=0.05,
+        )
+
+        final_state = workflow.invoke("Explain speculative execution.")
+
+        self.assertFalse(final_state["verified"])
+        self.assertTrue(final_state["stagnated"])
+        self.assertEqual(final_state["retry_count"], 2)
+        self.assertEqual(final_state["final_answer"], STAGNATION_FALLBACK_MESSAGE)
+        self.assertEqual(len(final_state["history"]), 2)
+
+    def test_17_evaluator_pydantic_and_malformed_json_defensive_fallbacks(self):
+        """Verify defensive regex and Pydantic parsing gracefully fall back without runtime errors."""
+        # Unparseable gibberish
+        res_malformed = extract_evaluator_json("CRITICAL SYSTEM ERROR: MODEL FELL OVER <<<NOT JSON>>>")
+        self.assertEqual(res_malformed.score, 0.0)
+        self.assertEqual(res_malformed.feedback, PARSING_ERROR_FEEDBACK)
+        self.assertFalse(res_malformed.verified)
+
+        # JSON with non-numeric score
+        res_invalid_type = extract_evaluator_json('{"score": "invalid_number", "feedback": "Failed"}')
+        self.assertEqual(res_invalid_type.score, 0.0)
+        self.assertEqual(res_invalid_type.feedback, "Failed")
+
+        # JSON with missing fields
+        res_empty_dict = extract_evaluator_json('{}')
+        self.assertEqual(res_empty_dict.score, 0.0)
+        self.assertEqual(res_empty_dict.feedback, PARSING_ERROR_FEEDBACK)
+
+    def test_18_optimizer_accumulative_contrastive_history_prompt(self):
+        """Verify Optimizer constructs rich contrastive prompt referencing all previous failed attempts."""
+        mock_llm = MockLLMClient([])
+        controller = EvaluatorOptimizerController(
+            llm_client=mock_llm,
+            max_retries=3,
+            trust_threshold=0.90,
+        )
+
+        history = [
+            {
+                "iteration": 1,
+                "draft": "First draft claiming AI directly triggers state transactions.",
+                "score": 0.35,
+                "feedback": "Hallucination: AI is non-executive and cannot trigger state transactions.",
+            },
+            {
+                "iteration": 2,
+                "draft": "Second draft omitting citation metadata.",
+                "score": 0.70,
+                "feedback": "Missing metadata citations for section sec_134.",
+            },
+        ]
+
+        chunks = [
+            RetrievedContextChunk(
+                chunk_id="c1",
+                text="Non-Executive AI operates purely as an advisory system.",
+                metadata={"filename": "ares.txt", "section_id": "sec_134", "timestamp": "2026"},
+                distance=0.1,
+                similarity=0.9,
+            )
+        ]
+
+        prompt = controller.construct_optimizer_prompt(
+            query="What is Non-Executive AI?",
+            retrieved_chunks=chunks,
+            history=history,
+        )
+
+        self.assertIn("HISTORICAL REVISION LOG & PREVIOUS FAILURES:", prompt)
+        self.assertIn("ITERATION 1 (Score: 0.35 - REJECTED)", prompt)
+        self.assertIn("First draft claiming AI directly triggers state transactions.", prompt)
+        self.assertIn("ITERATION 2 (Score: 0.70 - REJECTED)", prompt)
+        self.assertIn("Second draft omitting citation metadata.", prompt)
+        self.assertIn("CONTRASTIVE LEARNING & REVISION DIRECTIVES:", prompt)
+        self.assertIn("Do NOT repeat the previous errors", prompt)
 
 
 if __name__ == "__main__":

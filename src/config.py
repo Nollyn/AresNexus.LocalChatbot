@@ -26,6 +26,9 @@ DISTANCE_THRESHOLD = 0.85
 MAX_RETRIES = 3
 TRUST_THRESHOLD = 0.90
 SAFETY_FALLBACK_MESSAGE = "A verified answer could not be generated within safety parameters."
+STAGNATION_THRESHOLD = 0.05
+STAGNATION_FALLBACK_MESSAGE = "Execution halted: Model refinement stagnated below safety thresholds to protect compute allocation."
+PARSING_ERROR_FEEDBACK = "Error parsing evaluator model response layout. Forcing correction loop."
 
 # Optimizer System Prompt Template
 AI_ARCHITECT_SYSTEM_PROMPT = (
