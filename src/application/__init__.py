@@ -8,6 +8,7 @@ from .evaluator_optimizer import (
 )
 from .ingestion_service import IngestionService, IngestionPipeline
 from .inference_service import InferenceService, InferencePipeline
+from .workflow import LangGraphRAGWorkflow, create_evaluator_optimizer_workflow
 
 __all__ = [
     "EvaluatorOptimizerController",
@@ -17,4 +18,6 @@ __all__ = [
     "IngestionPipeline",
     "InferenceService",
     "InferencePipeline",
+    "LangGraphRAGWorkflow",
+    "create_evaluator_optimizer_workflow",
 ]

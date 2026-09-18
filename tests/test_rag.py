@@ -40,6 +40,8 @@ from src.infrastructure.llm import (
     LLMClientFactory,
     EmbeddingGeneratorFactory,
 )
+from langgraph.graph import START, END
+from src.domain.state import AgentState
 from src.application.evaluator_optimizer import (
     EvaluatorOptimizerController,
     extract_evaluator_json,
@@ -47,6 +49,7 @@ from src.application.evaluator_optimizer import (
 )
 from src.application.ingestion_service import IngestionService, IngestionPipeline
 from src.application.inference_service import InferenceService, InferencePipeline
+from src.application.workflow import LangGraphRAGWorkflow, create_evaluator_optimizer_workflow
 from src.ingestion import DocumentChunker
 
 
@@ -396,6 +399,186 @@ class TestAresNexusCleanArchitecture(unittest.TestCase):
         )
         self.assertTrue(hasattr(legacy_inference, "query"))
         self.assertTrue(hasattr(legacy_inference, "retrieve"))
+
+    def test_11_langgraph_agent_state_schema(self):
+        """Verify AgentState TypedDict schema fields and initialization."""
+        state: AgentState = {
+            "query": "What is Non-Executive AI?",
+            "retrieved_context": [],
+            "current_draft": "Draft v1 text",
+            "evaluation_score": 0.95,
+            "evaluation_feedback": "Faithful citation.",
+            "retry_count": 1,
+            "verified": True,
+            "final_answer": "Draft v1 text",
+            "history": [],
+        }
+        self.assertEqual(state["query"], "What is Non-Executive AI?")
+        self.assertEqual(state["evaluation_score"], 0.95)
+        self.assertEqual(state["retry_count"], 1)
+        self.assertTrue(state["verified"])
+        self.assertIn("retrieved_context", state)
+        self.assertIn("current_draft", state)
+        self.assertIn("evaluation_feedback", state)
+
+    def test_12_langgraph_nodes_execution_and_state_mutation(self):
+        """Verify explicit LangGraph nodes (retrieve, optimize, evaluate) execute and mutate state."""
+        mock_repo = MockVectorStoreRepository()
+        mock_repo.upsert(
+            chunks=[
+                DocumentChunk(
+                    chunk_id="c_lg_1",
+                    text="Decision Gates validate transaction requests before state commits.",
+                    metadata={"filename": "pattern.txt", "section_id": "sec_dg"},
+                )
+            ],
+            embeddings=[[0.1] * 128],
+        )
+        mock_embed = MockEmbeddingGenerator()
+        mock_llm = MockLLMClient([
+            "Decision Gates act as security proxies [Source: pattern.txt, Section: sec_dg, Date: 2026].",
+            '{"score": 0.98, "feedback": "Accurately grounded in context."}'
+        ])
+
+        workflow = LangGraphRAGWorkflow(
+            vector_store=mock_repo,
+            llm_client=mock_llm,
+            embedding_generator=mock_embed,
+            max_retries=3,
+            trust_threshold=0.90,
+        )
+
+        # 1. Test node_retrieve
+        initial_state: AgentState = {"query": "How do Decision Gates work?"}
+        retrieval_output = workflow.node_retrieve(initial_state)
+        self.assertIn("retrieved_context", retrieval_output)
+        self.assertEqual(len(retrieval_output["retrieved_context"]), 1)
+
+        # 2. Test node_optimize
+        optimize_state: AgentState = {
+            "query": "How do Decision Gates work?",
+            "retrieved_context": retrieval_output["retrieved_context"],
+            "retry_count": 0,
+        }
+        optimize_output = workflow.node_optimize(optimize_state)
+        self.assertIn("current_draft", optimize_output)
+        self.assertEqual(optimize_output["retry_count"], 1)
+        self.assertIn("Decision Gates", optimize_output["current_draft"])
+
+        # 3. Test node_evaluate
+        evaluate_state: AgentState = {
+            "query": "How do Decision Gates work?",
+            "retrieved_context": retrieval_output["retrieved_context"],
+            "current_draft": optimize_output["current_draft"],
+            "retry_count": optimize_output["retry_count"],
+        }
+        evaluate_output = workflow.node_evaluate(evaluate_state)
+        self.assertEqual(evaluate_output["evaluation_score"], 0.98)
+        self.assertTrue(evaluate_output["verified"])
+        self.assertEqual(len(evaluate_output["history"]), 1)
+
+    def test_13_langgraph_conditional_edge_routing(self):
+        """Verify conditional router directs flow back to node_optimize or END based on score and retries."""
+        mock_repo = MockVectorStoreRepository()
+        mock_embed = MockEmbeddingGenerator()
+        mock_llm = MockLLMClient([])
+
+        workflow = LangGraphRAGWorkflow(
+            vector_store=mock_repo,
+            llm_client=mock_llm,
+            embedding_generator=mock_embed,
+            max_retries=3,
+            trust_threshold=0.90,
+        )
+
+        # Case 1: Low score, under max retries -> retry (route to node_optimize)
+        state_retry_1: AgentState = {"evaluation_score": 0.45, "retry_count": 1}
+        self.assertEqual(workflow.should_continue(state_retry_1), "node_optimize")
+
+        # Case 2: Low score, under max retries -> retry (route to node_optimize)
+        state_retry_2: AgentState = {"evaluation_score": 0.60, "retry_count": 2}
+        self.assertEqual(workflow.should_continue(state_retry_2), "node_optimize")
+
+        # Case 3: Low score, max retries reached -> terminate (route to END)
+        state_max_retries: AgentState = {"evaluation_score": 0.60, "retry_count": 3}
+        self.assertEqual(workflow.should_continue(state_max_retries), END)
+
+        # Case 4: High score meeting trust threshold -> accept and terminate (route to END)
+        state_accepted: AgentState = {"evaluation_score": 0.95, "retry_count": 1}
+        self.assertEqual(workflow.should_continue(state_accepted), END)
+
+    def test_14_langgraph_compiled_workflow_e2e_retry_loop(self):
+        """Verify full compiled StateGraph multi-agent loop with retry self-correction and acceptance."""
+        mock_repo = MockVectorStoreRepository()
+        mock_repo.upsert(
+            chunks=[
+                DocumentChunk(
+                    chunk_id="c_e2e_1",
+                    text="Ares-Nexus isolates cognitive AI from state machines.",
+                    metadata={"filename": "spec.txt", "section_id": "sec_isolation", "timestamp": "2026-09-18"},
+                )
+            ],
+            embeddings=[[0.1] * 128],
+        )
+        mock_embed = MockEmbeddingGenerator()
+        mock_llm = MockLLMClient([
+            # Draft 1 (hallucination)
+            "Ares-Nexus directly executes transactions in state machines.",
+            # Evaluator 1 (rejection)
+            '{"score": 0.40, "feedback": "Contradicts specification: cognitive AI is isolated from state machines."}',
+            # Draft 2 (self-corrected revision)
+            "Ares-Nexus isolates cognitive AI from direct state machine execution [Source: spec.txt, Section: sec_isolation, Date: 2026-09-18].",
+            # Evaluator 2 (acceptance)
+            '{"score": 1.0, "feedback": "Fully verified and correctly cited."}',
+        ])
+
+        workflow = create_evaluator_optimizer_workflow(
+            vector_store=mock_repo,
+            llm_client=mock_llm,
+            embedding_generator=mock_embed,
+            max_retries=3,
+            trust_threshold=0.90,
+        )
+
+        final_state = workflow.invoke("How does Ares-Nexus interface with state machines?")
+
+        self.assertTrue(final_state["verified"])
+        self.assertEqual(final_state["evaluation_score"], 1.0)
+        self.assertEqual(final_state["retry_count"], 2)
+        self.assertEqual(len(final_state["history"]), 2)
+        self.assertIn("isolates cognitive AI", final_state["final_answer"])
+        self.assertEqual(len(final_state["retrieved_context"]), 1)
+
+    def test_15_langgraph_compiled_workflow_max_retries_exhausted(self):
+        """Verify compiled StateGraph gracefully returns safety fallback when retries are exhausted."""
+        mock_repo = MockVectorStoreRepository()
+        mock_embed = MockEmbeddingGenerator()
+        mock_llm = MockLLMClient([
+            # Draft 1 + Rejection
+            "Draft 1",
+            '{"score": 0.30, "feedback": "Hallucination"}',
+            # Draft 2 + Rejection
+            "Draft 2",
+            '{"score": 0.30, "feedback": "Hallucination"}',
+            # Draft 3 + Rejection
+            "Draft 3",
+            '{"score": 0.30, "feedback": "Hallucination"}',
+        ])
+
+        workflow = create_evaluator_optimizer_workflow(
+            vector_store=mock_repo,
+            llm_client=mock_llm,
+            embedding_generator=mock_embed,
+            max_retries=3,
+            trust_threshold=0.90,
+        )
+
+        final_state = workflow.invoke("Explain undefined protocol.")
+
+        self.assertFalse(final_state["verified"])
+        self.assertEqual(final_state["retry_count"], 3)
+        self.assertEqual(final_state["final_answer"], SAFETY_FALLBACK_MESSAGE)
+        self.assertEqual(len(final_state["history"]), 3)
 
 
 if __name__ == "__main__":

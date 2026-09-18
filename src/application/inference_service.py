@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 from src.domain.interfaces import VectorStoreRepository, LLMClient, EmbeddingGenerator
 from src.domain.models import RetrievedContextChunk, InferenceResponse
 from src.application.evaluator_optimizer import EvaluatorOptimizerController, NOT_FOUND_MESSAGE
+from src.application.workflow import LangGraphRAGWorkflow, create_evaluator_optimizer_workflow
 from src.infrastructure.vector_store.factory import VectorStoreFactory
 from src.infrastructure.llm.factory import LLMClientFactory, EmbeddingGeneratorFactory
 from src.config import (
@@ -58,6 +59,15 @@ class InferenceService:
             max_retries=MAX_RETRIES,
             trust_threshold=TRUST_THRESHOLD,
         )
+        self.workflow = create_evaluator_optimizer_workflow(
+            vector_store=self.vector_store,
+            llm_client=self.llm_client,
+            embedding_generator=self.embedding_generator,
+            top_k=self.top_k,
+            distance_threshold=self.distance_threshold,
+            max_retries=self.evaluator_optimizer.max_retries,
+            trust_threshold=self.evaluator_optimizer.trust_threshold,
+        )
 
     def retrieve(self, query: str, top_k: Optional[int] = None) -> List[RetrievedContextChunk]:
         """
@@ -81,7 +91,7 @@ class InferenceService:
 
     def query(self, query_text: str) -> Dict[str, Any]:
         """
-        Execute full RAG inference with Evaluator-Optimizer closed-loop verification.
+        Execute full RAG inference with LangGraph StateGraph Evaluator-Optimizer verification.
 
         :param query_text: User question string.
         :return: Complete response dictionary.
@@ -97,20 +107,34 @@ class InferenceService:
                 "history": [],
             }
 
-        retrieved_chunks = self.retrieve(query=query_text)
-        result_payload = self.evaluator_optimizer.execute_loop(
-            query_text=query_text,
-            chunks=retrieved_chunks,
-        )
+        final_state = self.workflow.invoke(query_text)
+        retrieved_raw = final_state.get("retrieved_context", [])
+        converted_chunks: List[RetrievedContextChunk] = []
+        for c in retrieved_raw:
+            if isinstance(c, RetrievedContextChunk):
+                converted_chunks.append(c)
+            elif isinstance(c, dict):
+                converted_chunks.append(
+                    RetrievedContextChunk(
+                        chunk_id=c.get("chunk_id", ""),
+                        text=c.get("text", ""),
+                        metadata=c.get("metadata", {}),
+                        distance=c.get("distance", 0.0),
+                        similarity=c.get("similarity", 1.0),
+                    )
+                )
+
+        history = final_state.get("history", [])
+        iterations = len(history) or final_state.get("retry_count", 1)
 
         response = InferenceResponse(
-            query=result_payload["query"],
-            answer=result_payload["answer"],
-            retrieved_chunks=retrieved_chunks,
-            iterations=result_payload["iterations"],
-            verified=result_payload["verified"],
-            score=result_payload["score"],
-            history=result_payload.get("history", []),
+            query=final_state.get("query", query_text),
+            answer=final_state.get("final_answer", final_state.get("current_draft", "")),
+            retrieved_chunks=converted_chunks,
+            iterations=iterations,
+            verified=final_state.get("verified", False),
+            score=final_state.get("evaluation_score", 0.0),
+            history=history,
         )
         return response.to_dict()
 

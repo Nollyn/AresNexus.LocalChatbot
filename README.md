@@ -2,6 +2,7 @@
 
 <!-- Architectural Badges -->
 ![Architecture](https://shields.io/badge/Architecture-Clean%20Architecture%20%7C%20SOLID%20%7C%20DDD-darkgreen)
+![Orchestration](https://shields.io/badge/Orchestrator-LangGraph%20%7C%20StateGraph-indigo)
 ![Design-Patterns](https://shields.io/badge/Patterns-Evaluator--Optimizer%20%7C%20Strategy%20%7C%20Factory-blueviolet)
 ![AI-Engine](https://shields.io/badge/AI%20Engine-Ollama%20%7C%20Llama%203-blue)
 ![Vector-DB](https://shields.io/badge/Vector%20DB-ChromaDB%20%7C%20Local-orange)
@@ -10,7 +11,7 @@
 ## Executive Summary
 This repository serves as a production-grade local **Retrieval-Augmented Generation (RAG)** sandbox designed to evaluate the deployment and behavioral constraints of the **Ares-Nexus** architectural pattern within highly regulated environments.
 
-The codebase strictly enforces **SOLID principles**, **Clean Architecture**, and the **Evaluator-Optimizer** Multi-Agent design pattern, establishing a closed-loop iterative audit mechanism to guarantee context grounding and verifiable inference.
+The codebase strictly enforces **SOLID principles**, **Clean Architecture**, and the **Evaluator-Optimizer** Multi-Agent design pattern orchestrated natively via **LangGraph StateGraph**, establishing a closed-loop iterative audit mechanism to guarantee context grounding and verifiable inference.
 
 ---
 
@@ -18,51 +19,76 @@ The codebase strictly enforces **SOLID principles**, **Clean Architecture**, and
 
 ```text
 src/
-├── domain/                  # Domain Layer (Entities & Abstract Interfaces)
-│   ├── models.py            # DocumentChunk, RetrievedContextChunk, EvaluationResult, InferenceResponse
-│   └── interfaces.py        # VectorStoreRepository, LLMClient, EmbeddingGenerator, ChunkerStrategy
-├── infrastructure/          # Infrastructure Layer (Concrete Adapters & DB Engines)
-│   ├── chunking/            # ParagraphChunkerStrategy (Strategy Pattern)
-│   ├── vector_store/        # ChromaVectorStoreRepository & VectorStoreFactory (Factory Pattern)
-│   └── llm/                 # OllamaLLMClient, OllamaEmbeddingGenerator & LLMClientFactory
-├── application/             # Application Layer (Use Cases & Orchestrators)
-│   ├── ingestion_service.py # IngestionService (Single Responsibility orchestration)
-│   ├── inference_service.py # InferenceService (Dependency Inversion consumer)
-│   └── evaluator_optimizer.py # EvaluatorOptimizerController (Closed-loop multi-agent audit)
-├── config.py                # Hyperparameters, settings, and system prompt templates
-└── cli.py                   # Presentation Layer (CLI entrypoint with Composition Root)
+├── domain/                      # Domain Layer (Entities, Value Objects, Interfaces & State)
+│   ├── models.py                # DocumentChunk, RetrievedContextChunk, EvaluationResult, InferenceResponse
+│   ├── interfaces.py            # VectorStoreRepository, LLMClient, EmbeddingGenerator, ChunkerStrategy
+│   └── state.py                 # AgentState (Native LangGraph TypedDict Schema)
+├── infrastructure/              # Infrastructure Layer (Concrete Adapters & DB Engines)
+│   ├── chunking/                # ParagraphChunkerStrategy (Strategy Pattern)
+│   ├── vector_store/            # ChromaVectorStoreRepository & VectorStoreFactory (Factory Pattern)
+│   └── llm/                     # OllamaLLMClient, OllamaEmbeddingGenerator & LLMClientFactory
+├── application/                 # Application Layer (Use Cases & Workflow Orchestrators)
+│   ├── ingestion_service.py     # IngestionService (Single Responsibility orchestration)
+│   ├── inference_service.py     # InferenceService (Dependency Inversion consumer)
+│   ├── evaluator_optimizer.py   # EvaluatorOptimizerController (Closed-loop multi-agent audit)
+│   └── workflow.py              # LangGraphRAGWorkflow (Native StateGraph orchestration)
+├── presentation/                # Presentation Layer (CLI entrypoints & interactive loop)
+│   └── cli.py                   # Native LangGraph .invoke() runner & composition root
+├── config.py                    # Hyperparameters, settings, and system prompt templates
+├── cli.py                       # CLI re-export adapter (backward compatibility)
+└── main.py                      # Application bootstrap entrypoint
 ```
 
 ### 1. SOLID Principles Implementation
-* **Single Responsibility Principle (SRP):** Distinct classes for persistence (`ChromaVectorStoreRepository`), LLM generation (`OllamaLLMClient`), embeddings (`OllamaEmbeddingGenerator`), chunking (`ParagraphChunkerStrategy`), ingestion orchestration (`IngestionService`), and inference orchestration (`InferenceService`).
+* **Single Responsibility Principle (SRP):** Distinct classes for persistence (`ChromaVectorStoreRepository`), LLM generation (`OllamaLLMClient`), embeddings (`OllamaEmbeddingGenerator`), chunking (`ParagraphChunkerStrategy`), graph topology (`LangGraphRAGWorkflow`), ingestion orchestration (`IngestionService`), and inference orchestration (`InferenceService`).
 * **Open/Closed Principle (OCP) & Interface Segregation:** Abstract base classes (`VectorStoreRepository`, `LLMClient`, `EmbeddingGenerator`, `ChunkerStrategy`) defined in `src/domain/interfaces.py`. New backends (e.g., Amazon Bedrock, OpenSearch) can be plugged in without changing core business logic.
-* **Dependency Inversion Principle (DIP):** High-level services (`InferenceService`, `IngestionService`, `EvaluatorOptimizerController`) depend strictly on domain interfaces via constructor injection (`__init__`).
+* **Dependency Inversion Principle (DIP):** High-level services (`LangGraphRAGWorkflow`, `InferenceService`, `IngestionService`, `EvaluatorOptimizerController`) depend strictly on domain interfaces via constructor injection (`__init__`).
 
-### 2. Applied Design Patterns
+### 2. Applied Design Patterns & Frameworks
+* **LangGraph StateGraph Workflow:** Native directed cyclic state graph managing multi-agent state preservation, node execution, and conditional routing.
 * **Evaluator-Optimizer Multi-Agent Pattern:** Two-agent loop with Optimizer (draft generator) and Evaluator (verification judge), claim-by-claim context auditing, and trust threshold gating.
 * **Strategy Pattern:** Semantic text chunking encapsulated in `ParagraphChunkerStrategy` adhering to `ChunkerStrategy`.
 * **Factory Pattern:** Extensible factories `VectorStoreFactory`, `LLMClientFactory`, and `EmbeddingGeneratorFactory`.
 
 ---
 
-## Evaluator-Optimizer Closed-Loop Pipeline
+## Native LangGraph Orchestration Lifecycle
 
 ```text
-[User Query] 
-     │
-     ▼
-[Semantic Retrieval (VectorStoreRepository)]
-     │
-     ▼
-[Optimizer Drafts v1] ◄────────────────────────────────────────┐
-     │                                                         │
-     ▼                                                         │
-[Evaluator Audits JSON] ──(if score < 0.90)──► [Retry Loop with Corrective Critique]
-     │
-     │ (if score >= 0.90)
-     ▼
-[Final Verified Answer]
+                  ┌─────────────────────────────────────────────────────────┐
+                  │                 LangGraph StateGraph Engine             │
+                  │                                                         │
+[START] ─────────►│  [node_retrieve]                                        │
+                  │        │                                                │
+                  │        ▼                                                │
+                  │  [node_optimize] ◄────────────────────────────────┐     │
+                  │        │                                          │     │
+                  │        ▼                                          │     │
+                  │  [node_evaluate]                                  │     │
+                  │        │                                          │     │
+                  │        ▼                                          │     │
+                  │  [should_continue] ──(score < 0.90 & retries < 3)─┘     │
+                  │        │                                                │
+                  │        │ (score >= 0.90 or retries >= 3)                │
+                  │        ▼                                                │
+                  │      [END]                                              │
+                  └────────┼────────────────────────────────────────────────┘
+                           │
+                           ▼
+                  [Verified Response / Safety Fallback]
 ```
+
+### Agent State Schema (`AgentState`)
+The central state dictionary preserves execution context across graph iterations:
+* `query`: Original user prompt string.
+* `retrieved_context`: List of semantic context chunks from `VectorStoreRepository`.
+* `current_draft`: Current generated response from the Optimizer agent.
+* `evaluation_score`: Continuous metric (0.0 to 1.0) produced by the Evaluator judge.
+* `evaluation_feedback`: Detailed grounding and citation critique from the Evaluator.
+* `retry_count`: Total revision cycles executed.
+* `verified`: Boolean threshold acceptance flag (`score >= 0.90`).
+* `final_answer`: Verified output string or deterministic safety fallback.
+* `history`: Audit log tracking every iteration, draft, score, and critique.
 
 ---
 
@@ -70,7 +96,7 @@ src/
 
 | Dimension | Sandbox Target (Local) | Enterprise Production Mapping (AWS) | Verification Method |
 | :--- | :--- | :--- | :--- |
-| **Orchestration** | Clean Architecture Python Services | **Amazon Bedrock Agents (ReAct)** | Unit & E2E Traces |
+| **Orchestration** | Native LangGraph StateGraph | **Amazon Bedrock Agents / Step Functions** | Unit & Graph E2E Traces |
 | **Data Vectorization**| Ollama `nomic-embed-text` | **Amazon Titan Embeddings v2** | Vector pipeline execution |
 | **Vector Storage** | Local ChromaDB Partition | **Amazon OpenSearch Serverless / Aurora** | Cosine Similarity (< 0.85) |
 | **Security & Guardrails** | Evaluator-Optimizer with 0.90 Trust Threshold | **Amazon Bedrock Guardrails** | Claim-by-claim Grounding Audit |
@@ -95,12 +121,12 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-2. Execute test suite:
+2. Execute automated test suite (all 15 unit and graph tests):
 ```bash
 python -m unittest discover tests
 ```
 
-3. Run ingestion and single-turn query:
+3. Run ingestion and single-turn query via LangGraph:
 ```bash
 python main.py --ingest --reset
 python main.py --query "How do Decision Gates act as security proxies in Ares-Nexus?"

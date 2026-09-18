@@ -14,6 +14,7 @@ from .interfaces import (
     EmbeddingGenerator,
     ChunkerStrategy,
 )
+from .state import AgentState
 
 __all__ = [
     "DocumentChunk",
@@ -25,4 +26,5 @@ __all__ = [
     "LLMClient",
     "EmbeddingGenerator",
     "ChunkerStrategy",
+    "AgentState",
 ]
