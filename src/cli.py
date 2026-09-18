@@ -67,9 +67,12 @@ def run_single_query(query_text: str, show_context: bool = False):
                 print(f"  [{i}] Source: {meta.get('filename')} | Section: {meta.get('section_id')} | Sim: {chunk.get('similarity')}")
             print("-" * 24 + "\n")
 
-        print("--- AI ARCHITECT ANSWER ---")
+        status_str = "VERIFIED" if result.get("verified") else "UNVERIFIED"
+        score_val = result.get("score", 0.0)
+        iters = result.get("iterations", 1)
+        print(f"--- AI ARCHITECT ANSWER [{status_str} | Score: {score_val:.2f} | Iterations: {iters}] ---")
         print(result["answer"])
-        print("-" * 27 + "\n")
+        print("-" * 65 + "\n")
 
     except Exception as e:
         print(f"[!] Inference failed: {e}")
@@ -117,7 +120,10 @@ def run_interactive_loop():
                     meta = chunk.get("metadata", {})
                     print(f"  Chunk {i} -> File: {meta.get('filename')} | Section: {meta.get('section_id')} | Score: {chunk.get('similarity')}")
 
-            print(f"\n[AI Architect Response]\n{result['answer']}")
+            status_str = "VERIFIED" if result.get("verified") else "UNVERIFIED"
+            score_val = result.get("score", 0.0)
+            iters = result.get("iterations", 1)
+            print(f"\n[AI Architect Response | {status_str} (Score: {score_val:.2f}, Iterations: {iters})]\n{result['answer']}")
 
         except (KeyboardInterrupt, EOFError):
             print("\n[*] Exiting Ares-Nexus Chatbot.")

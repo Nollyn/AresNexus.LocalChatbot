@@ -70,6 +70,7 @@ class OllamaService:
         model: Optional[str] = None,
         temperature: float = 0.0,
         options: Optional[Dict[str, Any]] = None,
+        format: Optional[str] = None,
     ) -> str:
         """
         Generate text response from local LLM.
@@ -80,12 +81,16 @@ class OllamaService:
             gen_options.update(options)
 
         try:
-            response = self.client.generate(
-                model=target_model,
-                prompt=prompt,
-                system=system or "",
-                options=gen_options,
-            )
+            generate_kwargs: Dict[str, Any] = {
+                "model": target_model,
+                "prompt": prompt,
+                "system": system or "",
+                "options": gen_options,
+            }
+            if format:
+                generate_kwargs["format"] = format
+
+            response = self.client.generate(**generate_kwargs)
             if "response" in response:
                 return response["response"].strip()
         except Exception as sdk_err:
@@ -94,13 +99,16 @@ class OllamaService:
         # HTTP fallback
         try:
             url = f"{self.host}/api/generate"
-            payload = {
+            payload: Dict[str, Any] = {
                 "model": target_model,
                 "prompt": prompt,
                 "system": system or "",
                 "stream": False,
                 "options": gen_options,
             }
+            if format:
+                payload["format"] = format
+
             resp = requests.post(url, json=payload, timeout=120)
             resp.raise_for_status()
             data = resp.json()
