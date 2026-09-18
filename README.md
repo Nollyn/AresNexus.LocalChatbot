@@ -50,6 +50,11 @@ src/
 * **Strategy Pattern:** Semantic text chunking encapsulated in `ParagraphChunkerStrategy` adhering to `ChunkerStrategy`.
 * **Factory Pattern:** Extensible factories `VectorStoreFactory`, `LLMClientFactory`, and `EmbeddingGeneratorFactory`.
 
+### 3. Defense-in-Depth Engineering Framework
+* **Robust JSON Fault-Tolerance:** Transition from brittle text parsing to defensive regex-based extraction combined with try-except programmatic schema fallbacks.
+* **Accumulative State Memory:** Progression from flat state overwrites to persistent state tracking vectors, enabling contrastive prompt context loops for the Optimizer.
+* **Hardware-Frugality Circuit Breakers:** Algorithmic routing in conditional edges that enforces early exits if model optimization stalls below a 0.05 score variance delta.
+
 ---
 
 ## Native LangGraph Orchestration Lifecycle
@@ -99,7 +104,7 @@ The central state dictionary preserves execution context across graph iterations
 | **Orchestration** | Native LangGraph StateGraph | **Amazon Bedrock Agents / Step Functions** | Unit & Graph E2E Traces |
 | **Data Vectorization**| Ollama `nomic-embed-text` | **Amazon Titan Embeddings v2** | Vector pipeline execution |
 | **Vector Storage** | Local ChromaDB Partition | **Amazon OpenSearch Serverless / Aurora** | Cosine Similarity (< 0.85) |
-| **Security & Guardrails** | Evaluator-Optimizer with 0.90 Trust Threshold | **Amazon Bedrock Guardrails** | Claim-by-claim Grounding Audit |
+| **Security & Guardrails** | Evaluator-Optimizer Dynamic Loop with a 0.90 Trust Threshold | **Amazon Bedrock Guardrails** | Automated regex validation, structured JSON evaluation fallback thresholds, and runtime execution stagnation checks |
 | **Hallucination Rate**| 0.0% (Deterministic Fallback) | 0.0% via Guardrail Interception | RAGAS Framework Testing |
 
 ---
