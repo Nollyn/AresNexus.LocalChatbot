@@ -15,7 +15,7 @@ The codebase strictly enforces **SOLID principles**, **Clean Architecture**, and
 
 ![Ares-Nexus Architecture](docs/architecture/assets/global-architecture.png)
 
-[🔗 Abrir diagrama interactivo de arquitectura en el navegador](docs/architecture/architecture.html)
+[🔗 Abrir diagrama interactivo de arquitectura en el navegador](https://htmlpreview.github.io/?https://github.com/Nollyn/AresNexus.LocalChatbot/blob/master/docs/architecture/architecture.html)
 
 ### Technical Flow Narrative
 * **Presentation Layer (`src/presentation/cli.py` / `src/cli.py`):** Acts as the unified user interface and composition root, capturing CLI queries and bootstrapping dependencies to dispatch execution directly into the state graph.
