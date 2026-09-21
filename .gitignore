@@ -1,10 +1,29 @@
-bin/
-obj/
-/packages/
-riderModule.iml
-/_ReSharper.Caches/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Databases & local storage
 chroma_db/
-.background_output_*.txt
-.output.txt
+*.sqlite3
+
+# IDEs & Editor configs
+.idea/
+.vscode/
+.junie/
+*.DotSettings.user
+
+# Archify visual check temporary artifacts
+*visual-check*

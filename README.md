@@ -13,6 +13,16 @@ This repository serves as a production-grade local **Retrieval-Augmented Generat
 
 The codebase strictly enforces **SOLID principles**, **Clean Architecture**, and the **Evaluator-Optimizer** Multi-Agent design pattern orchestrated natively via **LangGraph StateGraph**, establishing a closed-loop iterative audit mechanism to guarantee context grounding and verifiable inference.
 
+![Ares-Nexus Architecture](docs/architecture/assets/global-architecture.png)
+
+[🔗 Abrir diagrama interactivo de arquitectura en el navegador](docs/architecture/architecture.html)
+
+### Technical Flow Narrative
+* **Presentation Layer (`src/presentation/cli.py` / `src/cli.py`):** Acts as the unified user interface and composition root, capturing CLI queries and bootstrapping dependencies to dispatch execution directly into the state graph.
+* **Orchestrator Workflow (`src/application/workflow.py` - `LangGraphRAGWorkflow`):** Defines the directed cyclic state machine that coordinates state transitions across retrieval, drafting, evaluation, and conditional routing nodes while tracking multi-hop audit history.
+* **Multi-Agent Verification Loop (`src/application/evaluator_optimizer.py` - `EvaluatorOptimizerController`):** Enforces closed-loop quality gating with an Optimizer agent drafting answers and an Evaluator judge auditing factual consistency claim-by-claim (target threshold $\ge 0.90$) with stagnation circuit breakers and defensive JSON parsing.
+* **Vector Store & Persistence (`src/infrastructure/vector_store/` - ChromaDB & SQLite):** Manages localized persistence, semantic embedding storage via Ollama `nomic-embed-text`, and cosine similarity nearest-neighbor retrieval for contextual grounding chunks.
+
 ---
 
 ## Clean Architecture & Enterprise Design Patterns

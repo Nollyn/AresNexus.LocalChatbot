@@ -1,0 +1,366 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Ares-Nexus Local RAG & Multi-Agent Architecture",
+    "output": "architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1180,
+      470
+    ],
+    "views": [
+      {
+        "id": "inference-loop",
+        "label": "Evaluator-Optimizer Inference Loop",
+        "focus": [
+          "cli",
+          "workflow",
+          "eval_opt",
+          "ollama_client",
+          "ollama_srv",
+          "chroma_repo"
+        ],
+        "note": "Follow user query through LangGraph StateGraph, Evaluator-Optimizer verification, and Ollama inference."
+      },
+      {
+        "id": "ingestion-pipeline",
+        "label": "Document Ingestion & Vector Storage",
+        "focus": [
+          "doc_source",
+          "ingest",
+          "chunker",
+          "chroma_repo",
+          "chroma_db"
+        ],
+        "note": "Trace raw document parsing, paragraph chunking, embedding generation, and ChromaDB persistence."
+      },
+      {
+        "id": "clean-architecture",
+        "label": "Clean Architecture & Core Domain",
+        "focus": [
+          "cli",
+          "workflow",
+          "domain",
+          "chroma_repo",
+          "ollama_client"
+        ],
+        "note": "Observe Clean Architecture layering: Presentation, Application, Domain, and Infrastructure adapters."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "CLI & Main Runner",
+      "sublabel": "presentation.cli",
+      "pos": [
+        40,
+        50
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "tag": "Entrypoint",
+      "brand": "python"
+    },
+    {
+      "id": "workflow",
+      "type": "backend",
+      "label": "LangGraph StateGraph",
+      "sublabel": "application.workflow",
+      "pos": [
+        270,
+        50
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "Orchestrator"
+    },
+    {
+      "id": "eval_opt",
+      "type": "security",
+      "label": "Evaluator-Optimizer",
+      "sublabel": "evaluator_optimizer",
+      "pos": [
+        515,
+        50
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "Trust >= 0.90"
+    },
+    {
+      "id": "ollama_client",
+      "type": "backend",
+      "label": "Ollama LLM Adapter",
+      "sublabel": "infrastructure.llm",
+      "pos": [
+        760,
+        50
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "HTTP Client"
+    },
+    {
+      "id": "ollama_srv",
+      "type": "cloud",
+      "label": "Ollama Server",
+      "sublabel": "Llama 3.2 :11434",
+      "pos": [
+        1005,
+        50
+      ],
+      "size": [
+        145,
+        60
+      ],
+      "tag": "AI Runtime"
+    },
+    {
+      "id": "domain",
+      "type": "backend",
+      "label": "Domain Core & State",
+      "sublabel": "domain.models & state",
+      "pos": [
+        270,
+        180
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "Clean Domain"
+    },
+    {
+      "id": "chroma_repo",
+      "type": "database",
+      "label": "Chroma Vector Store",
+      "sublabel": "vector_store.chroma",
+      "pos": [
+        515,
+        180
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "Repository"
+    },
+    {
+      "id": "chroma_db",
+      "type": "database",
+      "label": "ChromaDB & SQLite",
+      "sublabel": "chroma_db/ persistent",
+      "pos": [
+        760,
+        180
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "Vector Store",
+      "brand": "sqlite"
+    },
+    {
+      "id": "doc_source",
+      "type": "external",
+      "label": "Baseline Documents",
+      "sublabel": "ares_nexus_pattern.txt",
+      "pos": [
+        40,
+        310
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "tag": "Raw Corpus"
+    },
+    {
+      "id": "ingest",
+      "type": "backend",
+      "label": "Ingestion Service",
+      "sublabel": "application.ingestion",
+      "pos": [
+        270,
+        310
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "ETL Pipeline"
+    },
+    {
+      "id": "chunker",
+      "type": "backend",
+      "label": "Paragraph Chunker",
+      "sublabel": "paragraph_chunker",
+      "pos": [
+        515,
+        310
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "Strategy"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "Application Layer (LangGraph & Multi-Agent)",
+      "wraps": [
+        "workflow",
+        "eval_opt",
+        "ingest"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Ares-Nexus Local Sandbox Environment",
+      "wraps": [
+        "cli",
+        "workflow",
+        "eval_opt",
+        "ollama_client",
+        "ollama_srv",
+        "domain",
+        "chroma_repo",
+        "chroma_db",
+        "doc_source",
+        "ingest",
+        "chunker"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "cli-to-workflow",
+      "from": "cli",
+      "to": "workflow",
+      "label": "invoke query",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "workflow-to-evalopt",
+      "from": "workflow",
+      "to": "eval_opt",
+      "label": "audit loop",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "evalopt-to-ollama",
+      "from": "eval_opt",
+      "to": "ollama_client",
+      "label": "LLM prompts",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "ollama-to-srv",
+      "from": "ollama_client",
+      "to": "ollama_srv",
+      "label": "REST API",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "workflow-to-domain",
+      "from": "workflow",
+      "to": "domain",
+      "label": "state mutation",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 18
+    },
+    {
+      "id": "evalopt-to-repo",
+      "from": "eval_opt",
+      "to": "chroma_repo",
+      "label": "context lookup",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 18
+    },
+    {
+      "id": "repo-to-chromadb",
+      "from": "chroma_repo",
+      "to": "chroma_db",
+      "label": "vector search",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "doc-to-ingest",
+      "from": "doc_source",
+      "to": "ingest",
+      "label": "raw text",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "ingest-to-chunker",
+      "from": "ingest",
+      "to": "chunker",
+      "label": "split text",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "chunker-to-repo",
+      "from": "chunker",
+      "to": "chroma_repo",
+      "label": "chunk vectors",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDy": -18
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Presentation & Application",
+      "items": [
+        "CLI runner dispatches user queries to native LangGraph StateGraph",
+        "Evaluator-Optimizer audits drafts with trust threshold >= 0.90",
+        "Algorithmic circuit breakers prevent stagnant refinement loops"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Domain & Infrastructure",
+      "items": [
+        "Clean Architecture enforces interface segregation and dependency inversion",
+        "Paragraph chunker strategy preserves semantic context boundaries",
+        "Decoupled ChromaDB repository and Ollama LLM adapter clients"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Local Storage & AI Runtime",
+      "items": [
+        "ChromaDB persistent vector store with localized SQLite indexing",
+        "Ollama offline engine hosting Llama 3.2 and Nomic-Embed models",
+        "Deterministic 0.0% hallucination fallback under context absence"
+      ]
+    }
+  ]
+}
