@@ -107,6 +107,87 @@ The central state dictionary preserves execution context across graph iterations
 
 ---
 
+## Architecture Decision Records (ADRs)
+* [ADR 0001: Local RAG Baseline Architecture](docs/adr/0001-local-rag-baseline-architecture.md)
+* [ADR 0002: Evaluator-Optimizer Multi-Agent Loop for Verified Inference](docs/adr/0002-evaluator-optimizer-multi-agent-loop.md)
+* [ADR 0003: Agent Framework Breadth via Native LangGraph](docs/adr/0003-agent-framework-breadth-via-native-langgraph.md)
+* [ADR 0004: Defensive Parsing and Stagnation Circuit Breakers](docs/adr/0004-defensive-parsing-and-stagnation-circuit-breakers.md)
+* [ADR 0005: Evaluator-Optimizer CI/CD Control Plane and Zero-Trust Governance](docs/adr/0005-evaluator-optimizer-ci-cd-control-plane.md)
+
+---
+
+## SDLC & Zero-Trust Governance Control Plane
+
+The **Ares-Nexus (NEAI)** framework enforces a zero-trust software development life cycle where **AI is never the system of record for pull request approval**. Every incoming Pull Request is subjected to a two-phase governance pipeline combining deterministic hard gates, bounded agentic evaluation loops, and deterministic decision gates.
+
+```text
+====================================================================================================
+                        ARES-NEXUS LOCAL CAHTBOT (NEAI) CI/CD GOVERNANCE CONTROL PLANE
+====================================================================================================
+
+      [ Developer Pull Request (PR) ]
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ PHASE 1: DETERMINISTIC HARD GATES                       │
+  │ • Zero-Trust Secret Scan (No API keys / Credentials)    │
+  │ • Static Security SAST Analysis (Bandit)                │
+  │ • Mandatory Unit & Integration Test Suites              │
+  └──────────────────────────┬──────────────────────────────┘
+                             │
+            ┌────────────────┴────────────────┐
+            │ [Fails any Phase 1 check?]      │
+            ├─────────────────────────────────┤
+            │  YES ──► 🛑 [ CIRCUIT BREAKER ] ──► Halts Pipeline (BLOCK)
+            │  NO
+            ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ PHASE 2: AGENTIC EVALUATOR-OPTIMIZER LOOP (LangGraph)   │
+  │ Isolated context & diffs audited vs docs/*_rubric.md    │
+  │                                                         │
+  │             ┌─────────────────────────┐                 │
+  │             │   [ Evaluator Node ]    │                 │
+  │             │ Claude/LLM JSON Audit   │                 │
+  │             │ ARCH & SEC Rubrics      │                 │
+  │             └────────────┬────────────┘                 │
+  │                          │                              │
+  │            [Minor Debt?] │ [Iterations < 2]             │
+  │             ┌────────────▼────────────┐                 │
+  │             │   [ Optimizer Node ]    │                 │
+  │             │ Generates Patch Proposal│                 │
+  │             └────────────┬────────────┘                 │
+  │                          │                              │
+  │                          ▼                              │
+  │             [ Loop bounded: Max 2 ]                     │
+  └──────────────────────────┬──────────────────────────────┘
+                             │
+                             ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ PHASE 3: DETERMINISTIC DECISION GATE (Rule-Based)       │
+  │ (AI is strictly advisory — Rules enforce authority)     │
+  │                                                         │
+  │ • Composite Score >= 0.88 & Zero Critical Violations    │
+  │     └──► ✅ PASS (PR Approved for Merge)                │
+  │                                                         │
+  │ • Composite Score 0.60 - 0.87 or Remediations Proposed  │
+  │     └──► ⚠️ HUMAN_REVIEW (Requires Architect Approval) │
+  │                                                         │
+  │ • Critical Violation (Secret / Unsafe Exec) or < 0.60   │
+  │     └──► ❌ BLOCK (PR Rejected)                         │
+  └──────────────────────────┬──────────────────────────────┘
+                             │
+                             ▼
+  [ Immutable Audit Log: SHA + Policy Hash + Tool Trace + Summary Artifact ]
+====================================================================================================
+```
+
+### Pipeline Governance Components
+1. **GitHub Actions Workflow (`.github/workflows/neai-control-plane.yml`):** Automates the two-phase pipeline on every PR targeting `main`, `master`, or `develop`.
+2. **Policy Rubrics (`docs/architecture_rubric.md` & `docs/security_rubric.md`):** Formally define dimensional weights, criteria, and penalty structures for clean architecture, separation of concerns, zero hardcoded secrets, input sanitization, and execution safety.
+3. **LangGraph Evaluator Gate (`src/evaluator_gate.py`):** Standalone orchestrator driving the Evaluator-Optimizer graph, emitting RFC-compliant audit logs (`neai_audit_log.json`) and GitHub Step Summaries (`neai_governance_report.md`).
+
+---
+
 ## Core SLA & Operational Matrix
 
 | Dimension | Sandbox Target (Local) | Enterprise Production Mapping (AWS) | Verification Method |

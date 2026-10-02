@@ -1,0 +1,140 @@
+﻿name: Ares-Nexus (NEAI) AI Governance Control Plane
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+    paths:
+      - 'src/**'
+      - 'docs/**'
+      - 'tests/**'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  # =========================================================================
+  # FASE 1: HARD GATES & CIRCUIT BREAKER (Deterministic Controls)
+  # =========================================================================
+  phase-1-hard-gates:
+    name: "Phase 1: Hard Gates (Circuit Breaker)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python Runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Hard-Gate Tooling & Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install bandit flake8
+
+      - name: "Hard Gate 1: Zero-Trust Secret Detection Scan"
+        run: |
+          echo "::group::Executing Secret Pattern Scan..."
+          # Scan for API keys, private tokens, high-entropy credentials
+          SECRETS_FOUND=0
+          if grep -rEI "(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{30,}|(?i)(api[_-]?key|secret[_-]?key|password)\s*=\s*['\"][a-zA-Z0-9_\-\.]{8,}['\"])" src/ ; then
+            echo "::error::Critical Violation: Hardcoded secrets or credentials detected in src/!"
+            SECRETS_FOUND=1
+          fi
+          
+          if [ $SECRETS_FOUND -ne 0 ]; then
+            echo "🛑 Circuit Breaker Activated: PR contains hardcoded credentials. Halting pipeline immediately."
+            exit 1
+          fi
+          echo "✅ Secret scan passed: Zero secrets detected."
+          echo "::endgroup::"
+
+      - name: "Hard Gate 2: SAST Static Security Analysis (Bandit)"
+        run: |
+          echo "::group::Executing SAST Analysis..."
+          bandit -r src/ -ll -ii --exclude src/ollama_client.py || {
+            echo "🛑 Circuit Breaker Activated: High/Medium SAST vulnerabilities detected!"
+            exit 1
+          }
+          echo "✅ SAST scan passed."
+          echo "::endgroup::"
+
+      - name: "Hard Gate 3: Mandatory Architecture & Unit Test Suite"
+        run: |
+          echo "::group::Executing Mandatory Test Suite..."
+          python -m unittest discover -s tests -p "test_*.py" -v || {
+            echo "🛑 Circuit Breaker Activated: Unit/Integration test suite failed!"
+            exit 1
+          }
+          echo "✅ Mandatory tests passed."
+          echo "::endgroup::"
+
+  # =========================================================================
+  # FASE 2: AGENTIC LOOPS (LangGraph Evaluator-Optimizer Governance Gate)
+  # =========================================================================
+  phase-2-agentic-loops:
+    name: "Phase 2: Agentic Evaluator-Optimizer Loop"
+    needs: phase-1-hard-gates
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python Runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Project & LangGraph Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Identify PR Changed Files
+        id: changed-files
+        run: |
+          # Get list of modified files in PR
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- 'src/*.py' 'src/**/*.py' || echo "")
+          echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "Modified files to audit: $CHANGED_FILES"
+
+      - name: Execute NEAI Evaluator-Optimizer Gate
+        id: evaluator-gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          echo "::group::Invoking LangGraph Governance Evaluator Loop..."
+          python src/evaluator_gate.py \
+            --commit-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --scan-dir "src" \
+            --docs-dir "docs" \
+            --output-json "neai_audit_log.json" \
+            --output-md "neai_governance_report.md" \
+            --fail-on-block
+          echo "::endgroup::"
+
+      - name: Upload Traceability Audit Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neai-governance-audit-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            neai_audit_log.json
+            neai_governance_report.md
+          retention-days: 30
