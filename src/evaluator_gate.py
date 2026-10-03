@@ -79,31 +79,63 @@ class GateState(TypedDict, total=False):
     traceability_log: Dict[str, Any]
 
 
-class ClaudeGateEvaluator:
+class GeminiGateEvaluator:
     """
-    Clean interface for LLM-assisted evaluation using Anthropic Claude / Ollama / Deterministic Engine.
+    Clean interface for LLM-assisted evaluation using Google Gemini ('gemini-1.5-flash') / Anthropic Claude / Ollama / Deterministic Engine.
     Provides structured JSON responses and defensive parsing.
     """
 
-    def __init__(self, provider: str = "auto"):
+    def __init__(self, provider: str = "auto", model: Optional[str] = None):
         self.provider = provider
+        self.model = model or os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self._gemini_sdk_client = None
+        self._gemini_legacy_model = None
+        self._gemini_api_key = None
         self._anthropic_client = None
         self._ollama_client = None
         self._init_client()
 
     def _init_client(self):
-        # 1. Try Anthropic if API key is present
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if api_key and (self.provider in ("auto", "anthropic")):
+        # 1. Try Google Gemini (Free Tier / Official API) if GEMINI_API_KEY or GOOGLE_API_KEY is present
+        gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if gemini_key and (self.provider in ("auto", "gemini", "google")):
+            self._gemini_api_key = gemini_key
+
+            # Try official google-genai SDK
+            try:
+                from google import genai
+                self._gemini_sdk_client = genai.Client(api_key=gemini_key)
+                logger.info(f"Initialized Google GenAI SDK client for Evaluator Gate (Model: {self.model}).")
+                return
+            except Exception as e:
+                logger.debug(f"google-genai SDK not initialized: {e}")
+
+            # Try google-generativeai SDK
+            try:
+                import google.generativeai as legacy_genai
+                legacy_genai.configure(api_key=gemini_key)
+                self._gemini_legacy_model = legacy_genai.GenerativeModel(self.model)
+                logger.info(f"Initialized Google GenerativeAI (legacy) client for Evaluator Gate (Model: {self.model}).")
+                return
+            except Exception as e:
+                logger.debug(f"google.generativeai SDK not initialized: {e}")
+
+            # Direct HTTP REST client fallback with GEMINI_API_KEY
+            logger.info(f"Using Direct HTTPS API client for Google Gemini Free Tier (Model: {self.model}).")
+            return
+
+        # 2. Try Anthropic Claude if ANTHROPIC_API_KEY is configured
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if anthropic_key and (self.provider in ("auto", "anthropic")):
             try:
                 import anthropic
-                self._anthropic_client = anthropic.Anthropic(api_key=api_key)
+                self._anthropic_client = anthropic.Anthropic(api_key=anthropic_key)
                 logger.info("Initialized Anthropic Claude client for Evaluator Gate.")
                 return
             except Exception as e:
                 logger.warning(f"Could not initialize Anthropic client: {e}")
 
-        # 2. Try Ollama if configured
+        # 3. Try Ollama if configured
         if self.provider == "ollama" or (self.provider == "auto" and os.getenv("OLLAMA_HOST")):
             try:
                 import ollama
@@ -114,6 +146,73 @@ class ClaudeGateEvaluator:
                 logger.warning(f"Could not initialize Ollama client: {e}")
 
         logger.info("Using Built-in Deterministic Zero-Trust Evaluation Engine for Gate.")
+
+    def _call_gemini(self, prompt: str, is_json: bool = True) -> Optional[str]:
+        """
+        Executes a call to Google Gemini model via available SDK or direct REST API.
+        """
+        # 1. Official google-genai SDK
+        if self._gemini_sdk_client:
+            try:
+                config = {"temperature": 0.0}
+                if is_json:
+                    config["response_mime_type"] = "application/json"
+                response = self._gemini_sdk_client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=config,
+                )
+                return response.text
+            except Exception as ex:
+                logger.error(f"Google GenAI SDK call error: {ex}")
+
+        # 2. google-generativeai SDK
+        if self._gemini_legacy_model:
+            try:
+                gen_config = {"temperature": 0.0}
+                if is_json:
+                    gen_config["response_mime_type"] = "application/json"
+                response = self._gemini_legacy_model.generate_content(
+                    prompt,
+                    generation_config=gen_config,
+                )
+                return response.text
+            except Exception as ex:
+                logger.error(f"Google GenerativeAI call error: {ex}")
+
+        # 3. Direct REST HTTPS call (Zero-dependency fallback for Free Tier)
+        if self._gemini_api_key:
+            try:
+                import urllib.request
+                import urllib.error
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self._gemini_api_key}"
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.0,
+                    }
+                }
+                if is_json:
+                    payload["generationConfig"]["responseMimeType"] = "application/json"
+
+                req_data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    url,
+                    data=req_data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    resp_body = json.loads(resp.read().decode("utf-8"))
+                    candidates = resp_body.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        if parts and "text" in parts[0]:
+                            return parts[0]["text"]
+            except Exception as ex:
+                logger.error(f"Gemini REST API call error: {ex}")
+
+        return None
 
     def evaluate(
         self,
@@ -126,10 +225,18 @@ class ClaudeGateEvaluator:
         """
         Executes structured evaluation of code against governance rubrics.
         """
-        # If real Claude client is available
+        prompt = self._build_eval_prompt(files_content, arch_rubric, sec_rubric, iteration, feedback)
+
+        # If Google Gemini is configured or explicitly requested
+        if self._gemini_sdk_client or self._gemini_legacy_model or self._gemini_api_key or self.provider in ("gemini", "google"):
+            raw_text = self._call_gemini(prompt, is_json=True)
+            if raw_text:
+                return self._parse_json_defensive(raw_text)
+            logger.warning("Gemini evaluation returned empty response. Falling back to next available engine.")
+
+        # If Anthropic Claude client is available
         if self._anthropic_client:
             try:
-                prompt = self._build_eval_prompt(files_content, arch_rubric, sec_rubric, iteration, feedback)
                 response = self._anthropic_client.messages.create(
                     model=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"),
                     max_tokens=2048,
@@ -140,12 +247,11 @@ class ClaudeGateEvaluator:
                 raw_text = response.content[0].text
                 return self._parse_json_defensive(raw_text)
             except Exception as ex:
-                logger.error(f"Anthropic API call error: {ex}. Falling back to deterministic engine.")
+                logger.error(f"Anthropic API call error: {ex}. Falling back to next available engine.")
 
         # If Ollama client is available
         if self._ollama_client:
             try:
-                prompt = self._build_eval_prompt(files_content, arch_rubric, sec_rubric, iteration, feedback)
                 response = self._ollama_client.chat(
                     model=os.getenv("OLLAMA_MODEL", "llama3.2"),
                     messages=[{"role": "user", "content": prompt}],
@@ -169,14 +275,22 @@ class ClaudeGateEvaluator:
         """
         Generates remediation patches for maintainability or non-critical architectural issues.
         """
+        prompt = (
+            f"Given these files:\n{json.dumps(files_content, indent=2)}\n"
+            f"And these audit findings:\n{json.dumps(findings, indent=2)}\n"
+            "Propose a targeted remediation patch in unified diff or refactored code format. "
+            "Output JSON: {\"patch\": \"...\", \"suggested_fixes\": [\"...\"]}"
+        )
+
+        # If Google Gemini is configured or explicitly requested
+        if self._gemini_sdk_client or self._gemini_legacy_model or self._gemini_api_key or self.provider in ("gemini", "google"):
+            raw_text = self._call_gemini(prompt, is_json=True)
+            if raw_text:
+                return self._parse_json_defensive(raw_text)
+
+        # If Anthropic client is available
         if self._anthropic_client:
             try:
-                prompt = (
-                    f"Given these files:\n{json.dumps(files_content, indent=2)}\n"
-                    f"And these audit findings:\n{json.dumps(findings, indent=2)}\n"
-                    "Propose a targeted remediation patch in unified diff or refactored code format. "
-                    "Output JSON: {\"patch\": \"...\", \"suggested_fixes\": [\"...\"]}"
-                )
                 response = self._anthropic_client.messages.create(
                     model=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"),
                     max_tokens=2048,
@@ -364,7 +478,7 @@ class ClaudeGateEvaluator:
                             if isinstance(node, ast.ImportFrom) and node.module:
                                 module_names.append(node.module)
                             for mod in module_names:
-                                if any(inf in mod for inf in ("chromadb", "ollama", "anthropic", "requests")):
+                                if any(inf in mod for inf in ("chromadb", "ollama", "anthropic", "google", "genai", "requests")):
                                     findings.append({
                                         "dimension": "ARCH-01",
                                         "severity": "HIGH",
@@ -414,6 +528,10 @@ class ClaudeGateEvaluator:
         }
 
 
+# Backward compatibility alias
+ClaudeGateEvaluator = GeminiGateEvaluator
+
+
 # =====================================================================
 # LangGraph Workflow Definition & Nodes
 # =====================================================================
@@ -423,8 +541,8 @@ class NEAIControlPlaneGate:
     Orchestrates the LangGraph Evaluator-Optimizer lifecycle for PR Gate enforcement.
     """
 
-    def __init__(self, evaluator_client: Optional[ClaudeGateEvaluator] = None):
-        self.evaluator_client = evaluator_client or ClaudeGateEvaluator()
+    def __init__(self, evaluator_client: Optional[GeminiGateEvaluator] = None):
+        self.evaluator_client = evaluator_client or GeminiGateEvaluator()
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -480,7 +598,7 @@ class NEAIControlPlaneGate:
         composite = round((arch_score * 0.45) + (sec_score * 0.55), 2)
 
         tool_record = {
-            "tool": "ClaudeGateEvaluator.evaluate",
+            "tool": f"{self.evaluator_client.__class__.__name__}.evaluate",
             "iteration": iteration,
             "timestamp": start_time,
             "arch_score": arch_score,
@@ -520,7 +638,7 @@ class NEAIControlPlaneGate:
         )
 
         tool_record = {
-            "tool": "ClaudeGateEvaluator.generate_remediation_patch",
+            "tool": f"{self.evaluator_client.__class__.__name__}.generate_remediation_patch",
             "iteration": iteration,
             "timestamp": start_time,
             "suggested_fixes_count": len(patch_result.get("suggested_fixes", [])),
@@ -766,7 +884,7 @@ def main():
     parser.add_argument("--docs-dir", default="docs", help="Directory containing governance rubrics")
     parser.add_argument("--output-json", default="neai_audit_log.json", help="Path to save structured JSON audit log")
     parser.add_argument("--output-md", default="neai_governance_report.md", help="Path to save Markdown audit summary")
-    parser.add_argument("--provider", default="auto", choices=["auto", "anthropic", "ollama", "deterministic"], help="Evaluation backend")
+    parser.add_argument("--provider", default="auto", choices=["auto", "gemini", "anthropic", "ollama", "deterministic"], help="Evaluation backend")
     parser.add_argument("--fail-on-block", action="store_true", default=True, help="Exit with non-zero exit code on BLOCK")
     args = parser.parse_args()
 
@@ -776,7 +894,7 @@ def main():
     target_files = collect_target_files(args.files, args.scan_dir)
     logger.info(f"Loaded {len(target_files)} target files for evaluation. Policy version: {policy_version}")
 
-    evaluator_client = ClaudeGateEvaluator(provider=args.provider)
+    evaluator_client = GeminiGateEvaluator(provider=args.provider)
     gate = NEAIControlPlaneGate(evaluator_client=evaluator_client)
 
     initial_state: GateState = {

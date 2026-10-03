@@ -10,6 +10,7 @@ from pathlib import Path
 
 from src.evaluator_gate import (
     NEAIControlPlaneGate,
+    GeminiGateEvaluator,
     ClaudeGateEvaluator,
     GateState,
     load_policy_rubrics,
@@ -212,6 +213,47 @@ def process():
             self.assertIn("Ares-Nexus (NEAI) - Governance Control Plane Audit", summary)
             self.assertIn("PASS", summary)
             self.assertIn("abcdef123456", summary)
+
+    def test_gemini_evaluator_configuration_and_mock(self):
+        """Test GeminiGateEvaluator initialization and structured parsing with mock responses."""
+        evaluator = GeminiGateEvaluator(provider="gemini", model="gemini-1.5-flash")
+        self.assertEqual(evaluator.model, "gemini-1.5-flash")
+        self.assertEqual(evaluator.provider, "gemini")
+
+        # Mock structured LLM output from Gemini
+        mock_gemini_json = json.dumps({
+            "architecture_score": 0.92,
+            "security_score": 0.96,
+            "critical_violation": False,
+            "is_maintainability_issue": False,
+            "findings": [],
+            "recommendations": ["Architecture meets standard."],
+        })
+        evaluator._call_gemini = lambda prompt, is_json=True: mock_gemini_json
+
+        res = evaluator.evaluate(
+            files_content={"src/test.py": "def foo(): pass"},
+            arch_rubric=self.arch_rubric,
+            sec_rubric=self.sec_rubric,
+            iteration=0,
+        )
+        self.assertEqual(res["architecture_score"], 0.92)
+        self.assertEqual(res["security_score"], 0.96)
+        self.assertFalse(res["critical_violation"])
+
+        # Test patch generation mock
+        mock_patch_json = json.dumps({
+            "patch": "# Remediation patch",
+            "suggested_fixes": ["Fix type annotations"],
+        })
+        evaluator._call_gemini = lambda prompt, is_json=True: mock_patch_json
+        patch_res = evaluator.generate_remediation_patch(
+            files_content={"src/test.py": "def foo(): pass"},
+            findings=[{"dimension": "ARCH-01", "message": "Add type hints"}],
+            iteration=0,
+        )
+        self.assertEqual(patch_res["patch"], "# Remediation patch")
+        self.assertEqual(patch_res["suggested_fixes"], ["Fix type annotations"])
 
 
 if __name__ == "__main__":

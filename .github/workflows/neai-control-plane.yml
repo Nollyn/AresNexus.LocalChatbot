@@ -116,7 +116,7 @@ jobs:
       - name: Execute NEAI Evaluator-Optimizer Gate
         id: evaluator-gate
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           echo "::group::Invoking LangGraph Governance Evaluator Loop..."
