@@ -138,7 +138,7 @@ The **Ares-Nexus (NEAI)** framework enforces a zero-trust software development l
             ┌────────────────┴────────────────┐
             │ [Fails any Phase 1 check?]      │
             ├─────────────────────────────────┤
-            │  YES ──► 🛑 [ CIRCUIT BREAKER ] ──► Halts Pipeline (BLOCK)
+            │                                YES ──► 🛑 [ CIRCUIT BREAKER ] ──► Halts Pipeline (BLOCK)
             │  NO
             ▼
   ┌─────────────────────────────────────────────────────────┐
